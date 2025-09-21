@@ -117,6 +117,9 @@ namespace KERBALISM
                 ui = new UIData();
             }
 
+			// migrate pre-3.25 process controllers
+			ProcessController.MigrateSaves(version);
+
 			// if an old savegame was imported, log some debug info
 			if (version != Lib.KerbalismVersion) Lib.Log("savegame converted from version " + version + " to " + Lib.KerbalismVersion);
         }

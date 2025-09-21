@@ -2494,16 +2494,18 @@ namespace KERBALISM
 		///  This function is used to solve the problem of obtaining a specific module prefab,
 		/// and support the case where there are multiple modules of the same type in the part.
 		/// </summary>
-		public static PartModule ModulePrefab(List<PartModule> module_prefabs, string module_name, Dictionary<string, Module_prefab_data> PD)
+		public static PartModule ModulePrefab(PartModuleList prefabModules, string module_name, Dictionary<string, Module_prefab_data> PD)
 		{
 			// get data related to this module type, or create it
 			Module_prefab_data data;
 			if (!PD.TryGetValue(module_name, out data))
 			{
-				data = new Module_prefab_data
-				{
-					prefabs = module_prefabs.FindAll(k => k.moduleName == module_name)
-				};
+				List<PartModule> prefabs = new List<PartModule>();
+				for (int i = 0; i < prefabModules.Count; i++)
+					if (prefabModules[i].moduleName == module_name)
+						prefabs.Add(prefabModules[i]);
+
+				data = new Module_prefab_data { prefabs = prefabs };
 				PD.Add(module_name, data);
 			}
 
@@ -2515,6 +2517,90 @@ namespace KERBALISM
 			else
 				return null;
 		}
+
+		public struct ProtoPartData
+		{
+			private static Dictionary<string, int> moduleIndices = new Dictionary<string, int>();
+
+			public readonly ProtoVessel protoVessel;
+			public readonly ProtoPartSnapshot protoPart;
+			public readonly Part partPrefab;
+			public readonly ProtoModuleData[] modulesData;
+
+			public ProtoPartData(ProtoVessel protoVessel, int partIndex)
+			{
+				this.protoVessel = protoVessel;
+				protoPart = protoVessel.protoPartSnapshots[partIndex];
+				partPrefab = protoPart.partPrefab;
+
+				int protoModuleCount = protoPart.modules.Count;
+				int prefabModuleCount = partPrefab.Modules.Count;
+				modulesData = new ProtoModuleData[protoModuleCount];
+
+				for (int i = 0; i < protoModuleCount; i++)
+				{
+					string moduleName = protoPart.modules[i].moduleName;
+					if (!moduleIndices.TryGetValue(moduleName, out int currentTypeIndex))
+					{
+						moduleIndices[moduleName] = 0;
+						currentTypeIndex = 0;
+					}
+
+					PartModule modulePrefab = null;
+
+					int typeCount = 0;
+					for (int j = 0; j < prefabModuleCount; j++)
+					{
+						if (partPrefab.Modules[j].moduleName == moduleName)
+						{
+							if (currentTypeIndex == typeCount)
+							{
+								modulePrefab = partPrefab.Modules[j];
+								typeCount++;
+								moduleIndices[moduleName] = typeCount;
+								break;
+							}
+							else
+							{
+								typeCount++;
+							}
+						}
+					}
+
+					modulesData[i] = new ProtoModuleData(this, protoPart.modules[i], modulePrefab);
+				}
+
+				moduleIndices.Clear();
+			}
+		}
+
+		public struct ProtoModuleData
+		{
+			public readonly ProtoPartData protoPartData;
+			public readonly ProtoPartModuleSnapshot protoModule;
+			public readonly PartModule modulePrefab;
+
+			public ProtoModuleData(ProtoPartData protoPartData, ProtoPartModuleSnapshot protoModule, PartModule modulePrefab)
+			{
+				this.protoPartData = protoPartData;
+				this.protoModule = protoModule;
+				this.modulePrefab = modulePrefab;
+			}
+		}
+
+		public static IEnumerable<ProtoPartData> GetProtoVesselPartData(ProtoVessel pv)
+		{
+			for (int i = pv.protoPartSnapshots.Count; i-- > 0;)
+				yield return new ProtoPartData(pv, i);
+		}
+
+		public static IEnumerable<ProtoPartData> GetProtoVesselsPartData(List<ProtoVessel> pvList)
+		{
+			for (int i = pvList.Count; i-- > 0;)
+				for (int j = pvList[i].protoPartSnapshots.Count; j-- > 0;)
+					yield return new ProtoPartData(pvList[i], j);
+		}
+
 		#endregion
 
 		#region RESOURCE
@@ -2609,31 +2695,44 @@ namespace KERBALISM
 		/// the resource is removed completely if the capacity reaches zero </summary>
 		public static void RemoveResource(Part p, string res_name, double amount, double capacity)
 		{
-			// if the resource is not in the part, do nothing
-			if (!p.Resources.Contains(res_name))
+			PartResource resource = p.Resources[res_name];
+
+			// if the resource is not in the part or isn't defined, do nothing
+			if (resource == null || resource.info == null)
 				return;
 
-			// get the resource
-			var res = p.Resources[res_name];
-
 			// reduce amount and capacity
-			res.amount -= amount;
-			res.maxAmount -= capacity;
+			resource.amount -= amount;
+			resource.maxAmount -= capacity;
 
 			// clamp amount to capacity just in case
-			res.amount = Math.Min(res.amount, res.maxAmount);
+			resource.amount = Math.Min(resource.amount, resource.maxAmount);
 
 			// if the resource is empty
-			if (res.maxAmount <= 0.005) //< deal with precision issues
+			if (resource.maxAmount <= 0.005) //< deal with precision issues
 			{
-				var reslib = PartResourceLibrary.Instance.resourceDefinitions;
-				var resourceDefinition = reslib[res_name];
-
-				p.Resources.dict.Remove(resourceDefinition.name.GetHashCode());
-				p.SimulationResources?.dict.Remove(resourceDefinition.name.GetHashCode());
+				p.Resources.dict.Remove(resource.info.id);
+				p.SimulationResources?.dict.Remove(resource.info.id);
 
 				GameEvents.onPartResourceListChange.Fire(p);
 			}
+		}
+
+		/// <summary>
+		/// Remove the specified resource from the part
+		/// </summary>
+		public static void RemoveResource(Part p, string res_name)
+		{
+			PartResource resource = p.Resources[res_name];
+
+			// if the resource is not in the part or isn't defined, do nothing
+			if (resource == null || resource.info == null)
+				return;
+
+			p.Resources.dict.Remove(resource.info.id);
+			p.SimulationResources?.dict.Remove(resource.info.id);
+
+			GameEvents.onPartResourceListChange.Fire(p);
 		}
 
 		///<summary>note: the resource must exist</summary>
@@ -2703,29 +2802,6 @@ namespace KERBALISM
 				p.Resources[res_name].amount = 0.0;
 			else {
 				Lib.LogDebugStack("Resource " + res_name + " not in part " + p.name); }
-		}
-
-		/// <summary> Set the enabled/disabled state of a process
-		/// <para> Use the process_capacity parameter to set the pseudo resource amount for the process,
-		/// an amount of 0.0 disables the process, any non-zero value is a multiplier of the process.
-		/// </para> </summary>
-		public static void SetProcessEnabledDisabled(Part p, string res_name, bool enable, double process_capacity)
-		{
-			if (!p.Resources.Contains(res_name))
-			{
-				Lib.AddResource(p, res_name, 0.0, process_capacity);
-			}
-
-			if (enable)
-			{
-				SetResource(p, res_name, process_capacity, process_capacity);
-			}
-			else
-			{
-				// Never remove the resource capacity, otherwise checks against
-				// the pseudo resource might fail
-				SetResource(p, res_name, 0.0, process_capacity);
-			}
 		}
 
 		/// <summary> Returns the definition of a resource, or null if it doesn't exist </summary>

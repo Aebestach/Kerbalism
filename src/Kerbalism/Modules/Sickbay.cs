@@ -84,8 +84,15 @@ namespace KERBALISM
 
 		public void Configure(bool enable, int slots, bool cureEverybody)
 		{
-			if (cureEverybody) Lib.SetProcessEnabledDisabled(part, resource, enable, capacity);
-			else Lib.SetProcessEnabledDisabled(part, resource, enable, capacity * slots);
+			double configuredCapacity = cureEverybody ? capacity : capacity * slots;
+
+			if (!part.Resources.Contains(resource))
+				Lib.AddResource(part, resource, 0.0, configuredCapacity);
+
+			if (enable)
+				Lib.SetResource(part, resource, configuredCapacity, configuredCapacity);
+			else
+				Lib.SetResource(part, resource, 0.0, configuredCapacity);
 		}
 
 		public void Update()

@@ -62,6 +62,8 @@ namespace KERBALISM
 				}
 			}
 			rules = cleaned;
+			// remove all sickbay cures
+			sickbay = string.Empty;
 		}
 
 		public RuleData Rule(string name)

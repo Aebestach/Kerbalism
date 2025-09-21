@@ -1,13 +1,9 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
-using KSP.Localization;
-using Smooth.Algebraics;
-using System.Diagnostics;
-
 
 namespace KERBALISM
 {
-
 	public class ProcessController: PartModule, IModuleInfo, IAnimatedModule, ISpecifics, IConfigurable
 	{
 		// config
@@ -18,9 +14,8 @@ namespace KERBALISM
 		[KSPField] public bool toggle = true;             // show the enable/disable toggle button
 
 		// persistence/config
-		// note: the running state doesn't need to be serialized, as it can be deduced from resource flow
-		// but we find useful to set running to true in the cfg node for some processes, and not others
 		[KSPField(isPersistant = true)] public bool running;
+		[KSPField(isPersistant = true)] public bool broken;
 
 		// index of the default dump valve
 		[KSPField] public int valve_i = 0;
@@ -28,9 +23,20 @@ namespace KERBALISM
 		// caching of GetInfo() for automation tooltip
 		public string ModuleInfo { get; private set; }
 
+		private PartResource pseudoResource;
+		private bool PseudoResourceFlowState
+		{
+			get => pseudoResource?.flowState ?? false;
+			set
+			{
+				if (pseudoResource != null)
+					pseudoResource.flowState = value;
+			}
+		}
+
 		private DumpSpecs.ActiveValve dumpValve;
 		private int persistentValveIndex = -1;
-		private bool broken = false;
+		
 		private bool isConfigurable = false;
 
 		public override void OnLoad(ConfigNode node)
@@ -63,7 +69,7 @@ namespace KERBALISM
 				return;
 
 			// configure on start, must be executed with enabled true on parts first load.
-			Configure(true);
+			Configure(true, 1);
 
 			// The dump valve instance is acquired either from the game-wide instance in the editor
 			// or from the persisted VesselData instance in flight.
@@ -108,26 +114,39 @@ namespace KERBALISM
 				running = true;
 
 			// set processes enabled state
-			Lib.SetProcessEnabledDisabled(part, resource, broken ? false : running, capacity);
+			PseudoResourceFlowState = !broken && running;
 		}
 
 		///<summary> Called by Configure.cs. Configures the controller to settings passed from the configure module</summary>
-		public void Configure(bool enable)
+		public void Configure(bool enable, int multiplier)
 		{
+			pseudoResource = part.Resources[resource];
 			if (enable)
 			{
+				double configuredCapacity = capacity * multiplier;
 				// if never set
 				// - this is the case in the editor, the first time, or in flight
 				//   in the case the module was added post-launch, or EVA kerbals
-				if (!part.Resources.Contains(resource))
+				// - check capacity so we apply apply multiplier changes.
+				// - don't check amount as we don't want to alter it in flight (ie, self-consuming processes)
+				if (pseudoResource == null || pseudoResource.maxAmount != configuredCapacity)
 				{
 					// add the resource
 					// - always add the specified amount, even in flight
-					Lib.AddResource(part, resource, (!broken && running) ? capacity : 0.0, capacity);
+					pseudoResource = Lib.AddResource(part, resource, configuredCapacity, configuredCapacity);
 				}
+
+				// migrate craft files that previously (in 3.24 and below) relied on setting the amount to zero instead
+				// of toggling the flow state. This should be safe to do since in the editor, a process controller
+				// should always have amount = maxAmount.
+				if (Lib.IsEditor() && pseudoResource.amount == 0.0 && pseudoResource.maxAmount > 0.0)
+					pseudoResource.amount = pseudoResource.maxAmount;
 			}
-			else
-				Lib.RemoveResource(part, resource, 0.0, capacity);
+			else if (pseudoResource != null)
+			{
+				Lib.RemoveResource(part, resource);
+				pseudoResource = null;
+			}
 		}
 
 		public void ModuleIsConfigured() => isConfigurable = true;
@@ -136,7 +155,7 @@ namespace KERBALISM
 		public void ReliablityEvent(bool breakdown)
 		{
 			broken = breakdown;
-			Lib.SetProcessEnabledDisabled(part, resource, broken ? false : running, capacity);
+			PseudoResourceFlowState = !broken && running;
 		}
 
 		public void Update()
@@ -166,12 +185,9 @@ namespace KERBALISM
 
 		public void SetRunning(bool value)
 		{
-			if (broken)
-				return;
-			
 			// switch status
-			running = value;
-			Lib.SetProcessEnabledDisabled(part, resource, running, capacity);
+			running = !broken && value;
+			PseudoResourceFlowState = running;
 
 			// refresh VAB/SPH ui
 			if (Lib.IsEditor()) GameEvents.onEditorShipModified.Fire(EditorLogic.fetch.ship);
@@ -187,7 +203,7 @@ namespace KERBALISM
 		}
 
 		public bool IsRunning() {
-			return running;
+			return running && !broken;
 		}
 
 		// specifics support
@@ -224,8 +240,66 @@ namespace KERBALISM
 		public bool ModuleIsActive() { return broken ? false : running; }
 		public bool IsSituationValid() { return true; }
 
+		/// <summary>
+		/// Migrate saves from 3.24 and below.
+		/// </summary>
+		/// <remarks>
+		/// In 3.25, we restored back the original implementation where process controllers are disabled by toggling their
+		/// pseudoresource flowState instead of altering their amount (see issues #940, #642 and #941 to a lesser extent).
+		/// This change require migrating the persisted state of process controllers, we have 4 possible cases :
+		/// <para/> - User-enabled PC : state is consistent, no action required
+		/// <para/> - User-disabled PC : isEnabled is true, running is false, resource amount is zero. We need to set the resource
+		///           amount to maxAmount, and to set flowState = false
+		/// <para/> - Configure-disabled PC : isEnabled is false, resource amount is zero. State is inconsistent, but we don't
+		///           care since those modules will never become enabled again, and the resource will be removed by the Configure
+		///           module on Start().
+		/// <para/> - Reliability-disabled PC : isEnabled is false, resource amount is zero. We need to alter the state like in the
+		///           user-disabled case, but we also need to set the "broken" flag on the PC.
+		/// </remarks>
+		public static void MigrateSaves(Version saveVersion)
+		{
+			if (saveVersion > saveNeedsMigrationMaxVersion)
+				return;
+
+			// will be null on new saves, shouldn't happen but better safe than sorry
+			if (HighLogic.CurrentGame.flightState == null)
+				return;
+
+			foreach (Lib.ProtoPartData ppd in Lib.GetProtoVesselsPartData(HighLogic.CurrentGame.flightState.protoVessels))
+			{
+				foreach (Lib.ProtoModuleData pmd in ppd.modulesData)
+				{
+					if (pmd.modulePrefab is ProcessController pcPrefab)
+					{
+						bool isEnabled = Lib.Proto.GetBool(pmd.protoModule, "isEnabled");
+						bool running = Lib.Proto.GetBool(pmd.protoModule, "running");
+
+						if (!isEnabled || (isEnabled && !running))
+						{
+							List<ProtoPartResourceSnapshot> resources = pmd.protoPartData.protoPart.resources;
+							for (int i = resources.Count; i-- > 0;)
+							{
+								if (resources[i].resourceName == pcPrefab.resource)
+								{
+									ProtoPartResourceSnapshot res = resources[i];
+									if (res.amount == 0.0 && res.maxAmount > 0.0)
+									{
+										res.amount = res.maxAmount;
+										res.flowState = false;
+
+										if (!isEnabled)
+											Lib.Proto.Set(pmd.protoModule, nameof(broken), true);
+									}
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		private static Version saveNeedsMigrationMaxVersion = new Version(3, 24);
 	}
-
-
 } // KERBALISM
 

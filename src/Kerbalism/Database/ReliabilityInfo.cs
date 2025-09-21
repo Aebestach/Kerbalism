@@ -104,9 +104,6 @@ namespace KERBALISM
 					// get part prefab (required for module properties)
 					Part part_prefab = PartLoader.getPartInfoByName(p.partName).partPrefab;
 
-					// get all module prefabs
-					var module_prefabs = part_prefab.FindModulesImplementing<PartModule>();
-
 					// clear module indexes
 					PD.Clear();
 
@@ -115,7 +112,7 @@ namespace KERBALISM
 					{
 						if (m.moduleName != "Reliability") continue;
 
-						Reliability module_prefab = Lib.ModulePrefab(module_prefabs, m.moduleName, PD) as Reliability;
+						Reliability module_prefab = Lib.ModulePrefab(part_prefab.Modules, m.moduleName, PD) as Reliability;
 						if (!module_prefab) continue;
 
 						// if the module is disabled, skip it

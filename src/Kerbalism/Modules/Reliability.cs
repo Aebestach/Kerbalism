@@ -595,13 +595,13 @@ namespace KERBALISM
 					m.enabled = true;
 				}
 
+				// type-specific hacks
+				Apply(false);
+
 				// we need to reconfigure the module here, because if all modules of a type
 				// share the broken state, and these modules are part of a configure setup,
 				// then repairing will enable all of them, messing up with the configuration
 				part.FindModulesImplementing<Configure>().ForEach(k => k.DoConfigure());
-
-				// type-specific hacks
-				Apply(false);
 
 				// notify user
 				Message.Post
@@ -713,6 +713,9 @@ namespace KERBALISM
 				{
 					// disable the module
 					Lib.Proto.Set(proto_module, "isEnabled", false);
+
+					if (reliability.type == "ProcessController")
+						Lib.Proto.Set(proto_module, nameof(ProcessController.broken), true);
 				}
 
 				// type-specific hacks
@@ -880,12 +883,9 @@ namespace KERBALISM
 			switch (type)
 			{
 				case "ProcessController":
-					if (b)
+					foreach (PartModule m in modules)
 					{
-						foreach (PartModule m in modules)
-						{
-							(m as ProcessController).ReliablityEvent(b);
-						}
+						(m as ProcessController).ReliablityEvent(b);
 					}
 					break;
 
@@ -930,22 +930,19 @@ namespace KERBALISM
 					break;
 
 				case "ModuleScienceExperiment":
-					if (b)
+					foreach (PartModule m in modules)
 					{
-						foreach (PartModule m in modules)
-						{
+						if (b)
 							(m as ModuleScienceExperiment).SetInoperable();
-						}
+						else
+							(m as ModuleScienceExperiment).ResetExperiment();
 					}
 					break;
 
 				case "Experiment":
-					if (b)
+					foreach (PartModule m in modules)
 					{
-						foreach (PartModule m in modules)
-						{
-							(m as Experiment).ReliablityEvent(b);
-						}
+						(m as Experiment).ReliablityEvent(b);
 					}
 					break;
 
@@ -980,14 +977,13 @@ namespace KERBALISM
 				foreach (ProtoPartSnapshot p in v.protoVessel.protoPartSnapshots)
 				{
 					Part part_prefab = PartLoader.getPartInfoByName(p.partName).partPrefab;
-					var module_prefabs = part_prefab.FindModulesImplementing<PartModule>();
 					PD.Clear();
 
 					foreach (ProtoPartModuleSnapshot m in p.modules)
 					{
 						if (m.moduleName != "Reliability") continue;
 
-						PartModule module_prefab = Lib.ModulePrefab(module_prefabs, m.moduleName, PD);
+						PartModule module_prefab = Lib.ModulePrefab(part_prefab.Modules, m.moduleName, PD);
 						if (!module_prefab) continue;
 
 						string r = Lib.Proto.GetString(m, "redundancy", string.Empty);

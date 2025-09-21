@@ -16,7 +16,7 @@ namespace KERBALISM
 	public interface IConfigurable
 	{
 		// configure the module
-		void Configure(bool enable);
+		void Configure(bool enable, int multiplier);
 
 		// called only if the module is part of a configure setup, and only on the prefab
 		// see Kerbalism.
@@ -138,10 +138,14 @@ namespace KERBALISM
 			}
 		}
 
-		void IConfigurable.Configure(bool enable)
+		void IConfigurable.Configure(bool enable, int multiplier)
 		{
 			enabled = enable;
 			isEnabled = enable;
+			// note that we ignore the multiplier here.
+			// this mean configure modules themselves configured by a configure module
+			// can't handle multiple slots having the same setup. Supporting this would
+			// require a complete refactor of how things are handled.
 			DoConfigure();
 		}
 
@@ -234,7 +238,7 @@ namespace KERBALISM
 
 						// call configure/deconfigure functions on module if available
 						if (m is IConfigurable configurable_module)
-							configurable_module.Configure(active);
+							configurable_module.Configure(active, count);
 					}
 				}
 

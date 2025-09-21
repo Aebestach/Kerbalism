@@ -49,7 +49,8 @@ namespace KERBALISM
 
 		private bool isConfigurable = false;
 
-		public void Configure(bool enable) {
+		public void Configure(bool enable, int multiplier) {
+			// multiplier is ignored for greenhouses
 			active = enable;
 			if(!active) {
 				growth = 0;

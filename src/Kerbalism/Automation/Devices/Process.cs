@@ -40,20 +40,21 @@ namespace KERBALISM
 
 		public override string Tooltip => Lib.BuildString(base.Tooltip, "\n", Lib.Bold("Process capacity :"), "\n", prefab.ModuleInfo);
 
-		public override string Status => Lib.Color(Lib.Proto.GetBool(protoModule, "running"), Local.Generic_RUNNING, Lib.Kolor.Green, Local.Generic_STOPPED, Lib.Kolor.Yellow);
+		public override string Status => Lib.Color(Lib.Proto.GetBool(protoModule, nameof(ProcessController.running)), Local.Generic_RUNNING, Lib.Kolor.Green, Local.Generic_STOPPED, Lib.Kolor.Yellow);
 
 		public override void Ctrl(bool value)
 		{
-			Lib.Proto.Set(protoModule, "running", value);
+			if (Lib.Proto.GetBool(protoModule, nameof(ProcessController.broken)))
+				return;
 
-			double capacity = prefab.capacity;
+			Lib.Proto.Set(protoModule, nameof(ProcessController.running), value);
 			var res = protoPart.resources.Find(k => k.resourceName == prefab.resource);
-			res.amount = value ? capacity : 0.0;
+			if (res != null) res.flowState = value;
 		}
 
 		public override void Toggle()
 		{
-			Ctrl(!Lib.Proto.GetBool(protoModule, "running"));
+			Ctrl(!Lib.Proto.GetBool(protoModule, nameof(ProcessController.running)));
 		}
 	}
 
