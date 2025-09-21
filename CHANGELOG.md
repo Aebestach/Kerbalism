@@ -1,3 +1,11 @@
+## v3.25 for all versions of KSP from 1.8.0 to 1.12.x
+
+ - 2025-09-21
+
+ ### Changes since the last release
+ *  ProcessController and related code refactor #948, fixes numerous bugs with psuedoresources #948 (@gotmachine)
+ *  Normalize NFElectric needs & add support for my personal mod RDK #952 (@R-T-B)
+ 
 ## v3.24 for all versions of KSP from 1.8.0 to 1.12.x
 
  - 2025-08-31
