@@ -1,11 +1,13 @@
+using KERBALISM.Modules;
+using KSP.Localization;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
-using KSP.Localization;
 
 
 namespace KERBALISM
@@ -100,6 +102,7 @@ namespace KERBALISM
 		private string mainOccludingPart;
 		private string rateFormat;
 		private StringBuilder sb;
+		private ExposureState exposureStatus;
 
 		public enum PanelState
 		{
@@ -119,10 +122,40 @@ namespace KERBALISM
 			Disabled,
 			Exposed,
 			InShadow,
+			NotVisible,
 			OccludedTerrain,
 			OccludedPart,
 			BadOrientation
 		}
+
+		private const string prefix = "#Kopernicus_";
+		public static string GetLoc(string template) => Localizer.Format(prefix + template);
+		private static string SolarPanelFixer_occludedby = GetLoc("SolarPanelFixer_occludedby"); // "occluded by <<1>>"
+		private static string SolarPanelFixer_notvisible = GetLoc("SolarPanelFixer_notvisible"); // "Not Visible"
+		private static string SolarPanelFixer_badorientation = GetLoc("SolarPanelFixer_badorientation"); // "bad orientation"
+		private static string SolarPanelFixer_exposure = GetLoc("SolarPanelFixer_exposure"); // "exposure"
+		private static string SolarPanelFixer_wear = GetLoc("SolarPanelFixer_wear"); // "wear"
+		private static string SolarPanelFixer_sunDirect = GetLoc("SolarPanelFixer_sunDirect"); // "Sun Direct"
+		private static string SolarPanelFixer_Selecttrackedstar = GetLoc("SolarPanelFixer_Selecttrackedstar"); // "Select tracked star"
+		private static string SolarPanelFixer_SelectTrackingBody = GetLoc("SolarPanelFixer_SelectTrackingBody"); // "Select Tracking Body"
+		private static string SolarPanelFixer_SelectTrackedstar_msg = GetLoc("SolarPanelFixer_SelectTrackedstar_msg"); // "Select the star you want to track with this solar panel."
+		private static string SolarPanelFixer_Automatic = GetLoc("SolarPanelFixer_Automatic"); // "Automatic"
+		private static string SolarPanelFixer_retracted = GetLoc("SolarPanelFixer_retracted"); // "retracted"
+		private static string SolarPanelFixer_extending = GetLoc("SolarPanelFixer_extending"); // "extending"
+		private static string SolarPanelFixer_retracting = GetLoc("SolarPanelFixer_retracting"); // "retracting"
+		private static string SolarPanelFixer_broken = GetLoc("SolarPanelFixer_broken"); // "broken"
+		private static string SolarPanelFixer_failure = GetLoc("SolarPanelFixer_failure"); // "failure"
+		private static string SolarPanelFixer_invalidstate = GetLoc("SolarPanelFixer_invalidstate"); // "invalid state"
+		private static string SolarPanelFixer_Trackedstar = GetLoc("SolarPanelFixer_Trackedstar"); // "Tracked star"
+		private static string SolarPanelFixer_AutoTrack = GetLoc("SolarPanelFixer_AutoTrack"); // "[Auto] : "
+
+		CelestialBody trackedSun;
+		//declare internal float curves
+		private static readonly FloatCurve temperatureEfficCurve = new FloatCurve();
+		private static readonly FloatCurve AtmosphericAttenutationAirMassMultiplier = new FloatCurve();
+		private static readonly FloatCurve AtmosphericAttenutationSolarAngleMultiplier = new FloatCurve();
+
+		public static string resourceName = null;
 		#endregion
 
 		#region KSP/Unity methods + background update
@@ -130,24 +163,28 @@ namespace KERBALISM
 		[KSPEvent(active = true, guiActive = true, guiName = "#KERBALISM_SolarPanelFixer_Selecttrackedstar")]//Select tracked star
 		public void ManualTracking()
 		{
+			KopernicusStar[] orderedStars = KopernicusStar.Stars
+				.OrderBy(s => Vector3.Distance(vessel.transform.position, s.sun.position)).ToArray();
+			Int32 stars = orderedStars.Count();
+			DialogGUIBase[] options = new DialogGUIBase[stars + 1];
 			// Assemble the buttons
-			DialogGUIBase[] options = new DialogGUIBase[Sim.suns.Count + 1];
-			options[0] = new DialogGUIButton(Local.SolarPanelFixer_Automatic, () => { manualTracking = false; }, true);//"Automatic"
-			for (int i = 0; i < Sim.suns.Count; i++)
+			options[0] = new DialogGUIButton(SolarPanelFixer_Automatic, () => { manualTracking = false; }, true); //"Automatic"
+			for (Int32 i = 0; i < stars; i++)
 			{
-				CelestialBody body = Sim.suns[i].body;
+				CelestialBody body = orderedStars[i].sun;
 				options[i + 1] = new DialogGUIButton(body.bodyDisplayName.Replace("^N", ""), () =>
 				{
 					manualTracking = true;
 					trackedSunIndex = body.flightGlobalsIndex;
 					SolarPanel.SetTrackedBody(body);
+					trackedSun = FlightGlobals.Bodies[trackedSunIndex];
 				}, true);
 			}
 
 			PopupDialog.SpawnPopupDialog(new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new MultiOptionDialog(
-				Local.SolarPanelFixer_SelectTrackingBody,//"SelectTrackingBody"
-				Local.SolarPanelFixer_SelectTrackedstar_msg,//"Select the star you want to track with this solar panel."
-				Local.SolarPanelFixer_Selecttrackedstar,//"Select tracked star"
+				SolarPanelFixer_SelectTrackingBody, //"Select Tracking Body"
+				SolarPanelFixer_SelectTrackedstar_msg, //"Select the star you want to track with this solar panel."
+				SolarPanelFixer_Selecttrackedstar, //"Select tracked star"
 				UISkinManager.GetSkin("MainMenuSkin"),
 				options), false, UISkinManager.GetSkin("MainMenuSkin"));
 		}
@@ -192,6 +229,38 @@ namespace KERBALISM
 
 		public override void OnStart(StartState startState)
 		{
+			temperatureEfficCurve.Add(4f, 1.2f, 0.0f, -0.0006f);
+			temperatureEfficCurve.Add(300f, 1f, -0.0008f, -0.0008f);
+			temperatureEfficCurve.Add(1200f, 0.134f, -0.00035f, -0.00035f);
+			temperatureEfficCurve.Add(1900f, 0.02f, -3.72E-05f, -3.72E-05f);
+			temperatureEfficCurve.Add(2500f, 0.01f, 0.0f, 0.0f);
+			AtmosphericAttenutationAirMassMultiplier.Add(0f, 1f, 0f, 0f);
+			AtmosphericAttenutationAirMassMultiplier.Add(5f, 0.982f, -0.010f, -0.010f);
+			AtmosphericAttenutationAirMassMultiplier.Add(10f, 0.891f, -0.032f, -0.032f);
+			AtmosphericAttenutationAirMassMultiplier.Add(15f, 0.746f, -0.025f, -0.025f);
+			AtmosphericAttenutationAirMassMultiplier.Add(20f, 0.657f, -0.014f, -0.014f);
+			AtmosphericAttenutationAirMassMultiplier.Add(30f, 0.550f, -0.0081f, -0.0081f);
+			AtmosphericAttenutationAirMassMultiplier.Add(40f, 0.484f, -0.0053f, -0.0053f);
+			AtmosphericAttenutationAirMassMultiplier.Add(50f, 0.439f, -0.0039f, -0.0039f);
+			AtmosphericAttenutationAirMassMultiplier.Add(60f, 0.405f, -0.0030f, -0.0030f);
+			AtmosphericAttenutationAirMassMultiplier.Add(80f, 0.357f, -0.0020f, -0.0020f);
+			AtmosphericAttenutationAirMassMultiplier.Add(100f, 0.324f, -0.0014f, -0.0014f);
+			AtmosphericAttenutationAirMassMultiplier.Add(150f, 0.271f, -0.00079f, -0.00079f);
+			AtmosphericAttenutationAirMassMultiplier.Add(200f, 0.239f, -0.00052f, -0.00052f);
+			AtmosphericAttenutationAirMassMultiplier.Add(300f, 0.200f, -0.00029f, -0.00029f);
+			AtmosphericAttenutationAirMassMultiplier.Add(500f, 0.159f, -0.00014f, -0.00014f);
+			AtmosphericAttenutationAirMassMultiplier.Add(800f, 0.130f, -0.00007f, -0.00007f);
+			AtmosphericAttenutationAirMassMultiplier.Add(1200f, 0.108f, -0.00004f, 0f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(0f, 1f, 0f, 0f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(15f, 0.985f, -0.0020f, -0.0020f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(30f, 0.940f, -0.0041f, -0.0041f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(45f, 0.862f, -0.0064f, -0.0064f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(60f, 0.746f, -0.0092f, -0.0092f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(75f, 0.579f, -0.0134f, -0.0134f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(90f, 0.336f, -0.0185f, -0.0185f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(105f, 0.100f, -0.008f, -0.008f);
+			AtmosphericAttenutationSolarAngleMultiplier.Add(120f, 0.050f, 0f, 0f);
+
 			sb = new StringBuilder(256);
 
 			// don't break tutorial scenarios
@@ -210,6 +279,15 @@ namespace KERBALISM
 
 			isInitialized = true;
 
+			try
+			{
+				trackedSun = FlightGlobals.Bodies[trackedSunIndex];
+			}
+			catch
+			{
+
+			}
+
 			if (!prefabDefinesTimeEfficCurve)
 				timeEfficCurve = SolarPanel.GetTimeCurve();
 
@@ -217,11 +295,11 @@ namespace KERBALISM
 				launchUT = Planetarium.GetUniversalTime();
 
 			// setup star selection GUI
-			Events["ManualTracking"].active = Sim.suns.Count > 1 && SolarPanel.IsTracking;
+			Events["ManualTracking"].active = KopernicusStar.Stars.Count > 1 && SolarPanel.IsTracking;
 			Events["ManualTracking"].guiActive = state == PanelState.Extended || state == PanelState.ExtendedFixed || state == PanelState.Static;
 
 			// setup target module animation for custom star tracking
-			SolarPanel.SetTrackedBody(FlightGlobals.Bodies[trackedSunIndex]);
+			SolarPanel.SetTrackedBody(trackedSun);
 
 			// set how many decimal points are needed to show the panel Ec output in the UI
 			if (nominalRate < 0.1) rateFormat = "F4";
@@ -288,6 +366,9 @@ namespace KERBALISM
 			bool addRate = false;
 			switch (exposureState)
 			{
+				case ExposureState.NotVisible:
+					panelStatus = "<color=#ff2222>" + SolarPanelFixer_notvisible + "</color>"; //not visible
+					break;
 				case ExposureState.InShadow:
 					panelStatus = "<color=#ff2222>"+Local.SolarPanelFixer_inshadow +"</color>";//in shadow
 					addRate = true;
@@ -418,6 +499,134 @@ namespace KERBALISM
 				return;
 			}
 
+			Vector3d position = Lib.VesselPosition(vd.Vessel);
+			List<KopernicusStar> starList = new List<KopernicusStar>();
+
+			Vector3d direction;
+			double distance;
+			for (Int32 s = 0; s < KopernicusStar.Stars.Count; s++)
+			{
+				KopernicusStar starL = KopernicusStar.Stars[s];
+				Vector3d dIRECTION = (starL.sun.position - position).normalized;
+				/*double Block=SolarPanel.GetOccludedFactor(dIRECTION,out trackedPart);
+                double Cosine=SolarPanel.GetCosineFactor(dIRECTION);*/
+				double factor = Sim.IsBodyVisible(vessel, position, starL.sun, Sim.GetLargeBodies(position), out direction, out distance) ? 1.0 : 0.0;
+				//if (Cosine * Block == 0)
+				if (factor == 0.0)
+				{
+					continue;
+				}
+				else
+				{
+					starList.Add(starL);
+				}
+			}
+
+			if (starList.Count > 0)
+			{
+				KopernicusStar brightestStar = KopernicusStar.GetBrightest(position, starList);
+				if (!manualTracking && trackedSun != brightestStar.sun)
+				{
+					trackedSunIndex = brightestStar.sun.flightGlobalsIndex;
+					trackedSun = brightestStar.sun;
+					SolarPanel.SetTrackedBody(trackedSun);
+				}
+			}
+			else
+			{
+				KopernicusStar[] orderedStars = KopernicusStar.Stars
+					.OrderBy(s => Vector3.Distance(vessel.transform.position, s.sun.position)).ToArray();
+				if (!manualTracking && trackedSun != orderedStars[0].sun)
+				{
+					trackedSunIndex = orderedStars[0].sun.flightGlobalsIndex;
+					trackedSun = orderedStars[0].sun;
+					SolarPanel.SetTrackedBody(trackedSun);
+				}
+			}
+
+			exposureFactor = 0.0;
+			Double totalFlux = 0;
+			Double totalFlow = 0;
+			double totalSunExposure = 0.0;
+			// iterate over all stars, compute the exposure factor
+			for (Int32 s = 0; s < KopernicusStar.Stars.Count; s++)
+			{
+				KopernicusStar star = KopernicusStar.Stars[s];
+				// Use this star
+				star.shifter.ApplyPhysics();
+
+				Vector3d sunDirection = (star.sun.position - position).normalized;
+
+				// Add to TotalFlux and EC tally
+				float panelEffectivness = 0;
+				//Now for some fancy atmospheric math
+				float atmoDensityMult = 1;
+				float atmoAngleMult = 1;
+				float tempMult = 1;
+				if (vessel.atmDensity > 0)
+				{
+					float horizonAngle = (float)Math.Acos(FlightGlobals.currentMainBody.Radius /
+														  (FlightGlobals.currentMainBody.Radius + FlightGlobals.ship_altitude));
+
+					float sunZenithAngleDeg = Vector3.Angle(FlightGlobals.upAxis, star.sun.position);
+
+					Double gravAccelParameter = (vessel.mainBody.gravParameter /
+												 Math.Pow(vessel.mainBody.Radius + FlightGlobals.ship_altitude, 2));
+
+					float massOfAirColumn = (float)(FlightGlobals.getStaticPressure() / gravAccelParameter);
+
+					tempMult = temperatureEfficCurve.Evaluate((float)vessel.atmosphericTemperature);
+					atmoDensityMult = AtmosphericAttenutationAirMassMultiplier.Evaluate(massOfAirColumn);
+					atmoAngleMult = AtmosphericAttenutationSolarAngleMultiplier.Evaluate(sunZenithAngleDeg);
+				}
+
+				double starFlux = 0;
+				//Calculate flux
+				double starFluxAtHome = 0;
+				if (PhysicsGlobals.SolarLuminosityAtHome != 0)
+				{
+					starFluxAtHome = 1360 / PhysicsGlobals.SolarLuminosityAtHome;
+				}
+				starFlux = star.CalculateFluxAt(vessel) * starFluxAtHome;
+
+				totalFlux += starFlux;
+
+				double sunCosineFactor = 0.0;
+				double sunOccludedFactor = 0.0;
+				string occludingPart = null;
+				// Compute final aggregate exposure factor
+				double sunExposureFactor = 0.0;
+
+
+				CalExposureAndCosin(star, sunDirection, out sunCosineFactor, out sunOccludedFactor, out occludingPart, out exposureStatus);
+				sunExposureFactor = sunCosineFactor * sunOccludedFactor;
+				totalSunExposure += sunExposureFactor;
+				if (star.sun.Equals(trackedSun))
+				{
+					exposureFactor = sunExposureFactor;
+				}
+				if ((sunExposureFactor != 0) && (tempMult != 0) && (atmoAngleMult != 0) && (atmoDensityMult != 0))
+				{
+					panelEffectivness = ((float)nominalRate / 24.3999996185303f) / 56.37091313591871f * (float)sunExposureFactor * tempMult *
+										atmoAngleMult *
+										atmoDensityMult; //56.blabla is a weird constant we use to turn flux into EC
+				}
+				if (starFluxAtHome > 0)
+				{
+					totalFlow += ((starFlux) * panelEffectivness) /
+								 (1360 / PhysicsGlobals.SolarLuminosityAtHome);
+				}
+
+			}
+
+			if ((exposureStatus != ExposureState.Exposed) && (totalSunExposure < 0.01))
+			{
+				exposureState = exposureStatus;
+			}
+			KopernicusStar.CelestialBodies[trackedSun].shifter.ApplyPhysics();
+			vessel.solarFlux = totalFlux;
+/*
+#region OriginKerbalism
 			// Update tracked sun in auto mode
 			if (!manualTracking && trackedSunIndex != vd.EnvMainSun.SunData.bodyIndex)
 			{
@@ -538,29 +747,72 @@ namespace KERBALISM
 			// - this include atmospheric absorption if inside an atmosphere
 			// - at high timewarps speeds, atmospheric absorption is analytical (integrated over a full revolution)
 			double distanceFactor = vd.EnvSolarFluxTotal / Sim.SolarFluxAtHome;
-
+			#endregion
+			*/
 			// get wear factor (time based output degradation)
 			wearFactor = 1.0;
 			if (timeEfficCurve?.Curve.keys.Length > 1)
 				wearFactor = Lib.Clamp(timeEfficCurve.Evaluate((float)((Planetarium.GetUniversalTime() - launchUT) / 3600.0)), 0.0, 1.0);
 
 			// get final output rate in EC/s
-			currentOutput = nominalRate * wearFactor * distanceFactor * exposureFactor;
+			//currentOutput = nominalRate * wearFactor * distanceFactor * exposureFactor;
+			currentOutput = totalFlow * wearFactor;
 
+
+			double trackedSunVisiblefactor = Sim.IsBodyVisible(vessel, position, trackedSun, Sim.GetLargeBodies(position), out direction, out distance) ? 1.0 : 0.0;
 			// ignore very small outputs
+			if (currentOutput < 1e-10)
+			{
+				currentOutput = 0.0;
+				if (exposureStatus == ExposureState.OccludedPart)
+				{
+					if (trackedSunVisiblefactor == 0)
+						exposureStatus = ExposureState.NotVisible;
+					exposureState = exposureStatus;
+				}
+				else
+				{
+					exposureState = ExposureState.NotVisible;
+				}
+				if (wearFactor == 0)
+				{
+					exposureState = ExposureState.Disabled;
+					state = PanelState.Failure;
+					Fields["panelStatusEnergy"].guiActive = false;
+					Fields["panelStatusSunAOA"].guiActive = false;
+				}
+			}
+			else
+			{
+				exposureState = ExposureState.Exposed;
+
+				// get resource handler
+				ResourceInfo ec = ResourceCache.GetResource(vessel, "ElectricCharge");
+
+				// produce EC
+				//ec.Produce(currentOutput * Kerbalism.elapsed_s, ResourceBroker.SolarPanel);
+				ec.Produce(currentOutput * Kerbalism.elapsed_s, ResourceBroker.SolarPanel);
+				UnityEngine.Profiling.Profiler.EndSample();
+
+				
+				/*if (resourceName == null)
+				{
+					resourceName = "ElectricCharge";
+				}
+				part.RequestResource(resourceName, (-currentOutput) * TimeWarp.fixedDeltaTime);
+			*/
+			}
+
+
+			/*// ignore very small outputs
 			if (currentOutput < 1e-10)
 			{
 				currentOutput = 0.0;
 				UnityEngine.Profiling.Profiler.EndSample();
 				return;
-			}
+			}*/
 
-			// get resource handler
-			ResourceInfo ec = ResourceCache.GetResource(vessel, "ElectricCharge");
-
-			// produce EC
-			ec.Produce(currentOutput * Kerbalism.elapsed_s, ResourceBroker.SolarPanel);
-			UnityEngine.Profiling.Profiler.EndSample();
+			
 		}
 
 		public static void BackgroundUpdate(Vessel v, ProtoPartModuleSnapshot m, SolarPanelFixer prefab, VesselData vd, ResourceInfo ec, double elapsed_s)
@@ -722,6 +974,43 @@ namespace KERBALISM
 			foreach (double exposure in exposures) averageExposure += exposure;
 			return averageExposure / exposures.Count;
 		}
+		///<summary>Calculate cosine factor and masking factor</summary>
+		public void CalExposureAndCosin(KopernicusStar star, Vector3d sunDirection, out double sunCosineFactor, out double sunOccludedFactor, out string occludingPart, out ExposureState exposureStats)
+		{
+			sunCosineFactor = 0.0;
+			sunOccludedFactor = 0.0;
+			occludingPart = null;
+			exposureStats = exposureStatus;
+			// Get the cosine factor (alignement between the sun and the panel surface)
+			sunCosineFactor = SolarPanel.GetCosineFactor(sunDirection);
+			if (sunCosineFactor == 0.0)
+			{
+				// If this is the tracked sun and the panel is not oriented toward the sun, update the gui info string.
+				if (star.sun == trackedSun)
+				{
+					exposureStats = ExposureState.BadOrientation;
+				}
+			}
+			else
+			{
+				// The panel is oriented toward the sun, do a physic raycast to check occlusion from parts, terrain, buildings...
+				sunOccludedFactor = SolarPanel.GetOccludedFactor(sunDirection, out occludingPart);
+				// If this is the tracked sun and the panel is occluded, update the gui info string. 
+				if (star.sun == trackedSun)
+				{
+					if (occludingPart != null)
+					{
+						exposureStats = ExposureState.OccludedPart;
+						mainOccludingPart = Lib.EllipsisMiddle(occludingPart, 15);
+					}
+					else
+					{
+						exposureStats = ExposureState.NotVisible;
+					}
+				}
+			}
+		}
+
 		#endregion
 
 		#region Abstract class for common interaction with supported PartModules
