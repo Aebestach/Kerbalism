@@ -472,15 +472,18 @@ namespace KERBALISM
 		{
 			mainIssue = string.Empty;
 
+			int intervalStartSituationId = lastSituationId;
+			bool distributeBodyBiomes = TryGetBodyBiomeInterval(
+				v, vd, prefab, expInfo, elapsed_s, out SubStepIntervalResult subStepInterval);
 			subjectData = ScienceDB.GetSubjectData(expInfo, vs);
 
-			bool subjectHasChanged;
+			bool subjectHasChanged = false;
 			if (subjectData != null)
 			{
 				subjectHasChanged = lastSituationId != subjectData.Situation.Id;
 				lastSituationId = subjectData.Situation.Id;
 			}
-			else
+			else if (!distributeBodyBiomes)
 			{
 				try
 				{
@@ -495,9 +498,9 @@ namespace KERBALISM
 				}
 			}
 
-			double scienceRemaining = subjectData.ScienceRemainingToCollect;
+			double scienceRemaining = subjectData?.ScienceRemainingToCollect ?? 0.0;
 
-			if (expState != RunningState.Forced && scienceRemaining <= 0.0)
+			if (!distributeBodyBiomes && expState != RunningState.Forced && scienceRemaining <= 0.0)
 				return 0.0;
 
 			if (isShrouded && !prefab.allow_shrouded)
@@ -506,7 +509,7 @@ namespace KERBALISM
 				return 0.0;
 			}
 
-			if (subjectHasChanged && prefab.crew_reset.Length > 0)
+			if (!distributeBodyBiomes && subjectHasChanged && prefab.crew_reset.Length > 0)
 			{
 				mainIssue = Local.Module_Experiment_issue3;//"reset required"
 				return 0.0;
@@ -544,7 +547,7 @@ namespace KERBALISM
 				return 0.0;
 			}
 
-			if (!v.loaded && subjectData.Situation.AtmosphericFlight())
+			if (!v.loaded && subjectData != null && subjectData.Situation.AtmosphericFlight())
 			{
 				mainIssue = Local.Module_Experiment_issue8;//"background flight"
 				return 0.0;
@@ -572,6 +575,13 @@ namespace KERBALISM
 			{
 				mainIssue = "Error : chunkSizeMax is 0.0";
 				return 0.0;
+			}
+
+			if (distributeBodyBiomes)
+			{
+				return RunningUpdateBodyBiomes(v, vd, prefab, hdId, ec, resources, resourceDefs, expInfo,
+					expState, elapsed_s, chunkSizeMax, reqScalar, subStepInterval,
+					intervalStartSituationId, out mainIssue);
 			}
 
 			double chunkSize = chunkSizeMax * reqScalar;
@@ -645,27 +655,7 @@ namespace KERBALISM
 				Lib.Log("mass delta is NaN " + expInfo.ExperimentId + " " + expInfo.SampleMass + " / " + chunkSize + " / " + expInfo.DataSize, Lib.LogLevel.Error);
 #endif
 
-			if (!expInfo.IsSample)
-			{
-				if (warpDrive != null)
-				{
-					double s = Math.Min(chunkSize, warpDrive.FileCapacityAvailable());
-					warpDrive.Record_file(subjectData, s, true);
-
-					if (chunkSize > s) // only write to persisted drive if the data cannot be transmitted in this tick
-						drive.Record_file(subjectData, chunkSize - s, true);
-					else if (!drive.files.ContainsKey(subjectData)) // if everything is transmitted, create an empty file so the player know what is happening
-						drive.Record_file(subjectData, 0.0, true);
-				}
-				else
-				{
-					drive.Record_file(subjectData, chunkSize, true);
-				}
-			}
-			else
-			{
-				drive.Record_sample(subjectData, chunkSize, massDelta);
-			}
+			RecordExperimentData(expInfo, subjectData, chunkSize, massDelta, drive, warpDrive);
 
 			// consume resources
 			ec.Consume(prefab.ec_rate * elapsed_s, ResourceBroker.Experiment);
@@ -679,6 +669,233 @@ namespace KERBALISM
 			}
 
 			return prodFactor;
+		}
+
+		private sealed class SubjectDuration
+		{
+			public SubjectData Subject;
+			public double Duration;
+			public double ProductiveDuration;
+		}
+
+		private static bool TryGetBodyBiomeInterval(Vessel v, VesselData vd,
+			Experiment prefab, ExperimentInfo expInfo, double elapsedSeconds, out SubStepIntervalResult interval)
+		{
+			interval = null;
+			if (v == null || vd == null || expInfo == null)
+				return false;
+			if (expInfo.IsSample)
+				return false;
+			if (!SubStepSimulation.RequiresIntervalSampling(elapsedSeconds))
+				return false;
+			if (Lib.Landed(v) || v.orbitDriver?.orbit == null || v.mainBody?.BiomeMap == null)
+				return false;
+			uint orbitalBiomeMask = ScienceSituation.InSpaceLow.BitValue()
+				| ScienceSituation.InSpaceHigh.BitValue()
+				| ScienceSituation.Space.BitValue();
+			if ((expInfo.BiomeMask & orbitalBiomeMask) == 0
+				|| !expInfo.ExpBodyConditions.IsBodyAllowed(v.mainBody))
+				return false;
+
+			interval = SubStepSimulation.GetOrCreate(v, elapsedSeconds);
+			return interval.IsValid && interval.Samples.Count > 1;
+		}
+
+		/// <summary>
+		/// Split a biome-sensitive file experiment over the body biomes crossed
+		/// during the elapsed interval. Geometry is shared with the solar and
+		/// other interval consumers; only the stock biome lookup stays managed.
+		/// </summary>
+		private static double RunningUpdateBodyBiomes(Vessel v, VesselData vd, Experiment prefab, uint hdId,
+			ResourceInfo ec, VesselResources resources, List<ObjectPair<string, double>> resourceDefs,
+			ExperimentInfo expInfo, RunningState expState, double elapsedSeconds, double chunkSizeMax,
+			double requirementScalar, SubStepIntervalResult interval, int intervalStartSituationId,
+			out string mainIssue)
+		{
+			mainIssue = string.Empty;
+			List<SubjectDuration> allocations = new List<SubjectDuration>();
+			List<SubjectDuration> orderedSegments = new List<SubjectDuration>();
+			Dictionary<string, int> allocationIndex = new Dictionary<string, int>();
+			bool resetBoundaryReached = false;
+
+			for (int i = 0; i < interval.Samples.Count; i++)
+			{
+				SubStepGeometrySample sample = interval.Samples[i];
+				Situation situation = vd.VesselSituations.GetExperimentSituationAt(
+					expInfo, sample.Altitude, sample.Latitude, sample.Longitude);
+				SubjectData subject = ScienceDB.GetSubjectData(expInfo, situation);
+				if (subject == null)
+					continue;
+				if (!string.IsNullOrEmpty(prefab.crew_reset))
+				{
+					if (intervalStartSituationId < 0)
+						intervalStartSituationId = subject.Situation.Id;
+					else if (subject.Situation.Id != intervalStartSituationId)
+					{
+						resetBoundaryReached = true;
+						break;
+					}
+				}
+
+				if (allocationIndex.TryGetValue(subject.Id, out int index))
+				{
+					allocations[index].Duration += sample.Duration;
+				}
+				else
+				{
+					allocationIndex.Add(subject.Id, allocations.Count);
+					allocations.Add(new SubjectDuration { Subject = subject, Duration = sample.Duration });
+				}
+
+				if (orderedSegments.Count > 0
+					&& orderedSegments[orderedSegments.Count - 1].Subject.Id == subject.Id)
+				{
+					orderedSegments[orderedSegments.Count - 1].Duration += sample.Duration;
+				}
+				else
+				{
+					orderedSegments.Add(new SubjectDuration { Subject = subject, Duration = sample.Duration });
+				}
+			}
+
+			if (allocations.Count == 0)
+			{
+				mainIssue = Local.Module_Experiment_issue1;
+				return 0.0;
+			}
+
+			double productiveSeconds = 0.0;
+			Dictionary<string, double> subjectRemainingData = new Dictionary<string, double>();
+			for (int i = 0; i < orderedSegments.Count; i++)
+			{
+				SubjectDuration segment = orderedSegments[i];
+				double requestedData = segment.Duration * prefab.data_rate * requirementScalar;
+				if (expState != RunningState.Forced)
+				{
+					if (!subjectRemainingData.TryGetValue(segment.Subject.Id, out double remainingData))
+					{
+						remainingData = segment.Subject.ScienceRemainingToCollect / segment.Subject.SciencePerMB;
+						subjectRemainingData.Add(segment.Subject.Id, remainingData);
+					}
+					requestedData = Math.Min(requestedData, remainingData);
+					subjectRemainingData[segment.Subject.Id] = Math.Max(0.0, remainingData - requestedData);
+				}
+				segment.ProductiveDuration = Math.Max(0.0, requestedData / prefab.data_rate);
+				productiveSeconds += segment.ProductiveDuration;
+			}
+			if (productiveSeconds <= 0.0)
+			{
+				if (resetBoundaryReached)
+					mainIssue = Local.Module_Experiment_issue3;
+				return 0.0;
+			}
+
+			double productionScalar = 1.0;
+			if (prefab.ec_rate > 0.0)
+				productionScalar = Math.Min(productionScalar,
+					Lib.Clamp(ec.Amount / (prefab.ec_rate * productiveSeconds), 0.0, 1.0));
+
+			foreach (ObjectPair<string, double> resource in resourceDefs)
+			{
+				if (resource.Value <= 0.0)
+					continue;
+				ResourceInfo resourceInfo = resources.GetResource(v, resource.Key);
+				productionScalar = Math.Min(productionScalar,
+					Lib.Clamp(resourceInfo.Amount / (resource.Value * productiveSeconds), 0.0, 1.0));
+			}
+
+			if (productionScalar <= 0.0)
+			{
+				mainIssue = Local.Module_Experiment_issue10;
+				return 0.0;
+			}
+
+			double recordedTotal = 0.0;
+			bool storageBlocked = false;
+			for (int i = 0; i < orderedSegments.Count; i++)
+			{
+				SubjectDuration segment = orderedSegments[i];
+				SubjectData subject = segment.Subject;
+				double chunkSize = prefab.data_rate * segment.ProductiveDuration * productionScalar;
+				if (chunkSize <= 0.0)
+					continue;
+
+				Drive drive = GetDrive(vd, hdId, chunkSize, subject);
+				if (drive == null)
+				{
+					storageBlocked = true;
+					break;
+				}
+
+				Drive warpDrive = null;
+				double available = drive.FileCapacityAvailable();
+				if (drive.GetFileSend(subject.Id))
+				{
+					warpDrive = vd.TransmitBufferDrive;
+					available += warpDrive.FileCapacityAvailable();
+				}
+
+				if (available <= 0.0)
+				{
+					storageBlocked = true;
+					break;
+				}
+
+				chunkSize = Math.Min(chunkSize, available);
+				RecordExperimentData(expInfo, subject, chunkSize, 0.0, drive, warpDrive);
+				recordedTotal += chunkSize;
+			}
+
+			if (recordedTotal <= 0.0)
+			{
+				if (storageBlocked)
+					mainIssue = Local.Module_Experiment_issue11;
+				return 0.0;
+			}
+
+			double consumedSeconds = recordedTotal / prefab.data_rate;
+			ec.Consume(prefab.ec_rate * consumedSeconds, ResourceBroker.Experiment);
+			foreach (ObjectPair<string, double> resource in resourceDefs)
+				resources.Consume(v, resource.Key, resource.Value * consumedSeconds, ResourceBroker.Experiment);
+			if (resetBoundaryReached)
+				mainIssue = Local.Module_Experiment_issue3;
+			if (Settings.SubStepSimulationLogging)
+			{
+				double allocatedDuration = 0.0;
+				for (int i = 0; i < allocations.Count; i++)
+					allocatedDuration += allocations[i].Duration;
+				Lib.Log("Substep science: experiment={0}, subjects={1}, allocated={2:F3}s/{3:F3}s, data={4:F6}, resourceSeconds={5:F3}",
+					Lib.LogLevel.Message, expInfo.ExperimentId, allocations.Count, allocatedDuration,
+					elapsedSeconds, recordedTotal, consumedSeconds);
+			}
+
+			return recordedTotal / chunkSizeMax;
+		}
+
+		private static void RecordExperimentData(ExperimentInfo expInfo, SubjectData subjectData,
+			double chunkSize, double massDelta, Drive drive, Drive warpDrive)
+		{
+			if (!expInfo.IsSample)
+			{
+				if (warpDrive != null)
+				{
+					double transmitted = Math.Min(chunkSize, warpDrive.FileCapacityAvailable());
+					warpDrive.Record_file(subjectData, transmitted, true);
+
+					if (chunkSize > transmitted)
+						drive.Record_file(subjectData, chunkSize - transmitted, true);
+					else if (!drive.files.ContainsKey(subjectData))
+						drive.Record_file(subjectData, 0.0, true);
+				}
+				else
+				{
+					drive.Record_file(subjectData, chunkSize, true);
+				}
+			}
+			else
+			{
+				drive.Record_sample(subjectData, chunkSize, massDelta);
+			}
 		}
 
 		public virtual Situation GetSituation(VesselData vd)

@@ -6,6 +6,7 @@ on:
       - '**/*.cs'
       - '**/*.csproj'
       - '**/*.props'
+      - 'CKAN-meta/Kerbalism.netkan'
   workflow_dispatch:
 
 jobs:

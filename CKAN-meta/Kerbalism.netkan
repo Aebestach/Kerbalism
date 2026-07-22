@@ -19,7 +19,8 @@
     "depends": [
         { "name": "Kerbalism-Config" },
         { "name": "KSPCommunityFixes" },
-        { "name": "Harmony2" }
+        { "name": "Harmony2" },
+        { "name": "KSPBurst", "min_version": "1.7.4.11" }
     ],
     "recommends": [
         { "name": "KerbalChangelog" }

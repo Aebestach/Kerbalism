@@ -1099,12 +1099,11 @@ namespace KERBALISM
 		}
 
 		/// <summary>
-		/// Full-rotation average of daylight × panel cosine for a landed flat panel.
-		/// Body-fixed panel directions remain constant while non-locked star directions
-		/// rotate through the body frame. Secondary stars use the face selected for the
-		/// tracked star at the same sample.
+		/// Full-rotation average of panel cosine for a landed flat panel.
+		/// Daylight/body shadow is already integrated by SubStepSimulation and
+		/// must not be estimated a second time here.
 		/// </summary>
-		static double CalculateLandedAnalyticFlatCosineDuty(Vessel v, VesselData.SunInfo sun, VesselData.SunInfo mainSun, double latitude, Vector3d surfaceNormal, bool isTracking, bool hasOrientation, Vector3d trackingPivotWorld, Vector3d panelNormalWorld)
+		static double CalculateLandedAnalyticFlatCosineDuty(Vessel v, VesselData.SunInfo sun, VesselData.SunInfo mainSun, Vector3d surfaceNormal, bool isTracking, bool hasOrientation, Vector3d trackingPivotWorld, Vector3d panelNormalWorld)
 		{
 			bool hasUsableOrientation = isTracking
 				? hasOrientation && trackingPivotWorld.sqrMagnitude > 1e-12
@@ -1114,9 +1113,8 @@ namespace KERBALISM
 			// ideal/day-average fallback until a loaded vessel can cache orientation.
 			if (!hasUsableOrientation)
 			{
-				double duty = CalculateSurfaceDaylightDuty(v, v.mainBody, latitude, sun.Direction, sun.SunData.body);
 				bool isLockedToSun = v.mainBody.tidallyLocked && v.mainBody.referenceBody == sun.SunData.body;
-				return duty * GetAnalyticFlatCosineFactor(sun, mainSun, isTracking, false, Vector3d.zero, Vector3d.zero, surfaceNormal, isLockedToSun);
+				return GetAnalyticFlatCosineFactor(sun, mainSun, isTracking, false, Vector3d.zero, Vector3d.zero, surfaceNormal, isLockedToSun);
 			}
 
 			Vector3d rotationAxis = v.mainBody.transform.up;
@@ -1128,10 +1126,6 @@ namespace KERBALISM
 				double angle = -360.0 * (i + 0.5) / LandedOrientationSampleCount;
 				QuaternionD bodyFrameRotation = QuaternionD.AngleAxis(angle, rotationAxis);
 				Vector3d sampledSunDir = GetSunDirectionAtBodyRotationSample(v.mainBody, sun.SunData.body, sun.Direction, bodyFrameRotation);
-
-				// Spherical-body horizon test for this star at this rotation phase.
-				if (Vector3d.Dot(surfaceNormal, sampledSunDir) <= 0.0)
-					continue;
 
 				Vector3d sampledMainSunDir = isMainSun
 					? sampledSunDir
@@ -1167,6 +1161,106 @@ namespace KERBALISM
 				default:
 					return 1.0;
 			}
+		}
+
+		/// <summary>
+		/// Apply panel orientation to the same shared samples that produced
+		/// visibility and atmospheric flux. This preserves the correlation
+		/// between daylight, incidence angle and attenuation.
+		/// </summary>
+		static bool TryCalculateSubStepPanelPower(Vessel v, List<VesselData.SunInfo> suns,
+			VesselData.SunInfo mainSun, ModuleDeployableSolarPanel.PanelType panelType, bool isTracking,
+			bool hasOrientation, Vector3d trackingPivotWorld, Vector3d panelNormalWorld,
+			out double actualPower, out double theoreticalMaxPower)
+		{
+			actualPower = 0.0;
+			theoreticalMaxPower = 0.0;
+			SubStepIntervalResult interval = mainSun?.Interval;
+			if (interval == null || !interval.IsValid || interval.ElapsedSeconds <= 0.0
+				|| !ReferenceEquals(v?.KerbalismData()?.SubStepInterval, interval)
+				|| suns == null || mainSun == null || Sim.SolarFluxAtHome <= double.Epsilon)
+				return false;
+
+			if (!interval.TryGetSun(mainSun.SunData.bodyIndex, out SubStepSunResult mainSunResult)
+				|| mainSunResult.Samples == null || mainSunResult.Samples.Count != interval.Samples.Count)
+				return false;
+
+			bool landed = Lib.Landed(v);
+			Vector3d rotationAxis = landed
+				? v.mainBody.BodyFrame.Rotation.swizzle * Vector3d.up
+				: Vector3d.zero;
+			Vector3d currentSurfaceNormal = landed
+				? (Lib.VesselPosition(v) - v.mainBody.position).normalized
+				: Vector3d.zero;
+			double maxCosine = GetTheoreticalMaxCosineFactor(panelType);
+			double integratedActual = 0.0;
+			double integratedTheoretical = 0.0;
+
+			for (int sunIndex = 0; sunIndex < suns.Count; sunIndex++)
+			{
+				VesselData.SunInfo sun = suns[sunIndex];
+				if (!ReferenceEquals(sun.Interval, interval)
+					|| !interval.TryGetSun(sun.SunData.bodyIndex, out SubStepSunResult sunResult)
+					|| sunResult.Samples == null || sunResult.Samples.Count != interval.Samples.Count)
+					return false;
+
+				bool isMainSun = sun == mainSun;
+				for (int sampleIndex = 0; sampleIndex < sunResult.Samples.Count; sampleIndex++)
+				{
+					SubStepSunSample sample = sunResult.Samples[sampleIndex];
+					double unshadowedFlux = sample.RawFlux * sample.AtmosphericFactor;
+					integratedTheoretical += sample.Duration * unshadowedFlux * maxCosine;
+					if (sample.DirectFlux <= 0.0)
+						continue;
+
+					double effectiveCosine;
+					if (panelType == ModuleDeployableSolarPanel.PanelType.SPHERICAL)
+					{
+						effectiveCosine = 0.25;
+					}
+					else if (panelType == ModuleDeployableSolarPanel.PanelType.CYLINDRICAL)
+					{
+						effectiveCosine = 1.0 / Math.PI;
+					}
+					else
+					{
+						Vector3d sampledPivot = trackingPivotWorld;
+						Vector3d sampledNormal = panelNormalWorld;
+						Vector3d sampledSurfaceNormal = currentSurfaceNormal;
+						if (landed)
+						{
+							double angleDegrees = -(sample.UT - interval.EndUT) * v.mainBody.angularV
+								* (180.0 / Math.PI);
+							QuaternionD bodyRotation = QuaternionD.AngleAxis(angleDegrees, rotationAxis);
+							sampledPivot = bodyRotation * sampledPivot;
+							sampledNormal = bodyRotation * sampledNormal;
+							sampledSurfaceNormal = bodyRotation * sampledSurfaceNormal;
+						}
+
+						Vector3d sampledMainDirection = mainSunResult.Samples[sampleIndex].Direction;
+						if (landed && !isTracking && (!hasOrientation || sampledNormal.sqrMagnitude <= 1e-12))
+						{
+							// Old saves without an orientation cache use a horizontal
+							// panel fallback, evaluated at this exact daylight sample.
+							effectiveCosine = Math.Max(0.0,
+								Vector3d.Dot(sample.Direction.normalized, sampledSurfaceNormal.normalized));
+						}
+						else
+						{
+							effectiveCosine = GetAnalyticFlatCosineFactor(
+								sample.Direction, sampledMainDirection, isMainSun, isTracking,
+								hasOrientation, sampledPivot, sampledNormal, sampledSurfaceNormal, false);
+						}
+					}
+
+					integratedActual += sample.Duration * sample.DirectFlux * effectiveCosine;
+				}
+			}
+
+			double denominator = interval.ElapsedSeconds * Sim.SolarFluxAtHome;
+			actualPower = integratedActual / denominator;
+			theoreticalMaxPower = integratedTheoretical / denominator;
+			return true;
 		}
 
 		/// <summary>
@@ -1206,6 +1300,11 @@ namespace KERBALISM
 		/// </summary>
 		public static double CalculateMultiStarPowerAnalytic(Vessel v, List<VesselData.SunInfo> suns, VesselData.SunInfo mainSun, ModuleDeployableSolarPanel.PanelType panelType, bool isTracking, out double theoreticalMaxPower, bool hasOrientation = false, Vector3d trackingPivotWorld = default, Vector3d panelNormalWorld = default)
 		{
+			if (TryCalculateSubStepPanelPower(v, suns, mainSun, panelType, isTracking,
+				hasOrientation, trackingPivotWorld, panelNormalWorld,
+				out double subStepPower, out theoreticalMaxPower))
+				return subStepPower;
+
 			// Landing/Splashdown Status Handling
 			if (Lib.Landed(v))
 			{
@@ -1259,7 +1358,6 @@ namespace KERBALISM
 			// --------- Surface normal (works for loaded & unloaded) ----------
 			Vector3d vesselPos = Lib.VesselPosition(v);
 			Vector3d surfaceNormal = (vesselPos - v.mainBody.position).normalized;
-			double latitude = Math.Asin(Vector3d.Dot(surfaceNormal, v.mainBody.transform.up));
 
 			bool isAnalytic = v.KerbalismData().EnvIsAnalytic;
 			foreach (var sun in suns)
@@ -1274,20 +1372,19 @@ namespace KERBALISM
 
 				if (isAnalytic)
 				{
-					// Full-rotation expectation. For flat panels with known orientation,
-					// daylight and incidence are correlated and must be integrated together.
-					double duty = CalculateSurfaceDaylightDuty(v, v.mainBody, latitude, sunDir, sun.SunData.body);
+					// Direct flux already contains the shared substep daylight,
+					// body-occlusion and atmospheric integration.
 					if (panelType == ModuleDeployableSolarPanel.PanelType.SPHERICAL)
 					{
-						effectiveCosineDuty = duty * 0.25;
+						effectiveCosineDuty = 0.25;
 					}
 					else if (panelType == ModuleDeployableSolarPanel.PanelType.CYLINDRICAL)
 					{
-						effectiveCosineDuty = duty * (1.0 / Math.PI);
+						effectiveCosineDuty = 1.0 / Math.PI;
 					}
 					else // FLAT
 					{
-						effectiveCosineDuty = CalculateLandedAnalyticFlatCosineDuty(v, sun, mainSun, latitude, surfaceNormal, isTracking, hasOrientation, trackingPivotWorld, panelNormalWorld);
+						effectiveCosineDuty = CalculateLandedAnalyticFlatCosineDuty(v, sun, mainSun, surfaceNormal, isTracking, hasOrientation, trackingPivotWorld, panelNormalWorld);
 					}
 				}
 				else
@@ -1306,36 +1403,10 @@ namespace KERBALISM
 						effectiveCosineDuty = GetAnalyticFlatCosineFactor(sun, mainSun, isTracking, hasOrientation, trackingPivotWorld, panelNormalWorld, surfaceNormal, isLockedToSun);
 					}
 				}
-				double availableFlux = isAnalytic ? unshadowedFlux : sun.SolarFlux;
+				double availableFlux = sun.SolarFlux;
 				totalPower += effectiveCosineDuty * (availableFlux / Sim.SolarFluxAtHome);
 			}
 			return totalPower;
-		}
-		private static double CalculateSurfaceDaylightDuty(Vessel v, CelestialBody body, double latitude, Vector3d sunDir, CelestialBody sunBody)
-		{
-			// Tidally locked body
-			// Only apply if the body is locked to the sun we are evaluating
-			if (body.tidallyLocked && body.referenceBody == sunBody)
-			{
-				Vector3d vesselPos = Lib.VesselPosition(v);
-				Vector3d bodyPos = body.position;
-				Vector3d surfaceNormal = (vesselPos - bodyPos).normalized;
-				Vector3d toSun = sunDir.normalized;
-				double cos = Vector3d.Dot(surfaceNormal, toSun);
-				return cos > 0.0 ? 1.0 : 0.0;
-			}
-
-			// Non-locked body: analytic daylight fraction
-			// cos(H0) = -tan(phi) * tan(delta)
-			double declination = Math.Asin(Vector3d.Dot(sunDir, body.transform.up));
-
-			double cosH0 = -Math.Tan(latitude) * Math.Tan(declination);
-
-			if (cosH0 >= 1.0) return 0.0;   // polar night
-			if (cosH0 <= -1.0) return 1.0;  // polar day
-
-			double H0 = Math.Acos(cosH0);
-			return H0 / Math.PI;
 		}
 
 		public static bool IsDeployedState(PanelState panelState)

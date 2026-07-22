@@ -211,6 +211,14 @@ namespace KERBALISM
 
 		public VesselSituations VesselSituations => vesselSituations; VesselSituations vesselSituations;
 
+		/// <summary>Most recently completed shared elapsed-interval geometry result.</summary>
+		public SubStepIntervalResult SubStepInterval => subStepInterval; SubStepIntervalResult subStepInterval;
+
+		internal void SetSubStepInterval(SubStepIntervalResult interval)
+		{
+			subStepInterval = interval;
+		}
+
 		public class SunInfo
 		{
 			/// <summary> reference to the sun/star</summary>
@@ -241,9 +249,12 @@ namespace KERBALISM
 
 			/// <summary>
 			/// scalar for solar flux absorbtion by atmosphere at vessel position, not meant to be used directly (use solar_flux instead)
-			/// <para/> if integrated over orbit (analytic evaluation), average atmospheric absorption factor over the daylight period (not the whole day)
+			/// <para/> if integrated over an interval, average atmospheric absorption over the whole interval
 			/// </summary>
 			public double AtmoFactor => atmoFactor; double atmoFactor;
+
+			/// <summary>The exact shared interval used to populate this sun, if any.</summary>
+			internal SubStepIntervalResult Interval { get; private set; }
 
 			/// <summary> proportion of this sun flux in the total flux at the vessel position (ignoring atmoshere and occlusion) </summary>
 			public double FluxProportion => fluxProportion; double fluxProportion;
@@ -273,35 +284,43 @@ namespace KERBALISM
 				vd.sunsInfo = new List<SunInfo>(Sim.suns.Count);
 				vd.solarFluxTotal = 0.0;
 				vd.rawSolarFluxTotal = 0.0;
+				if (!vd.isAnalytic)
+					vd.SetSubStepInterval(null);
+				SubStepIntervalResult subStepInterval = vd.isAnalytic
+					? SubStepSimulation.GetOrCreate(v, elapsedSeconds)
+					: null;
 
 				foreach (Sim.SunData sunData in Sim.suns)
 				{
 					SunInfo sunInfo = new SunInfo(sunData);
+					bool hasIntegratedFlux = false;
 
 					if (vd.isAnalytic)
 					{
-						// get sun direction and distance
-						Lib.DirectionAndDistance(vesselPosition, sunInfo.sunData.body, out sunInfo.direction, out sunInfo.distance);
-
-						if (Settings.UseSamplingSunFactor)
-							// sampling estimation of the portion of orbit that is in sunlight
-							// until we will calculate again
-							sunInfo.sunlightFactor = Sim.SampleSunFactor(v, elapsedSeconds, sunData.body);
-
+						if (subStepInterval != null && subStepInterval.IsValid
+							&& subStepInterval.TryGetSun(sunData.bodyIndex, out SubStepSunResult integratedSun))
+						{
+							sunInfo.direction = integratedSun.EndpointDirection;
+							sunInfo.distance = integratedSun.EndpointDistance;
+							sunInfo.sunlightFactor = integratedSun.SunlightFactor;
+							sunInfo.atmoFactor = integratedSun.AtmosphericFactor;
+							sunInfo.rawSolarFlux = integratedSun.AverageRawFlux;
+							sunInfo.solarFlux = integratedSun.AverageDirectFlux;
+							sunInfo.Interval = subStepInterval;
+							hasIntegratedFlux = true;
+						}
 						else
-							// analytical estimation of the portion of orbit that was in sunlight.
-							// it has some limitations, see the comments on Sim.EclipseFraction
-							sunInfo.sunlightFactor = 1.0 - Sim.EclipseFraction(v, sunData.body, sunInfo.direction);
-
-
-						// get atmospheric absorbtion
-						// for atmospheric bodies whose rotation period is less than 120 hours,
-						// determine analytic atmospheric absorption over a single body revolution instead
-						// of using a discrete value that would be unreliable at large timesteps :
-						if (vd.inAtmosphere)
-							sunInfo.atmoFactor = Sim.AtmosphereFactorAnalytic(v.mainBody, vesselPosition, sunInfo.direction);
-						else
-							sunInfo.atmoFactor = 1.0;
+						{
+							// Degrade to the previous analytic estimators when the elapsed
+							// trajectory can't be reconstructed (SOI changes, invalid orbit...).
+							Lib.DirectionAndDistance(vesselPosition, sunInfo.sunData.body, out sunInfo.direction, out sunInfo.distance);
+							sunInfo.sunlightFactor = Settings.UseSamplingSunFactor
+								? Sim.SampleSunFactor(v, elapsedSeconds, sunData.body)
+								: 1.0 - Sim.EclipseFraction(v, sunData.body, sunInfo.direction);
+							sunInfo.atmoFactor = vd.inAtmosphere
+								? Sim.AtmosphereFactorAnalytic(v.mainBody, vesselPosition, sunInfo.direction)
+								: 1.0;
+						}
 					}
 					else
 					{
@@ -312,8 +331,11 @@ namespace KERBALISM
 					}
 
 					// get resulting solar flux in W/m²
-					sunInfo.rawSolarFlux = sunInfo.sunData.SolarFlux(sunInfo.distance);
-					sunInfo.solarFlux = sunInfo.rawSolarFlux * sunInfo.sunlightFactor * sunInfo.atmoFactor;
+					if (!hasIntegratedFlux)
+					{
+						sunInfo.rawSolarFlux = sunInfo.sunData.SolarFlux(sunInfo.distance);
+						sunInfo.solarFlux = sunInfo.rawSolarFlux * sunInfo.sunlightFactor * sunInfo.atmoFactor;
+					}
 					// increment total flux from all stars
 					vd.rawSolarFluxTotal += sunInfo.rawSolarFlux;
 					vd.solarFluxTotal += sunInfo.solarFlux;

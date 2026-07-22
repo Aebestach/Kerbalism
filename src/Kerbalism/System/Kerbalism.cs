@@ -116,6 +116,7 @@ namespace KERBALISM
 				{
 					// core game systems
 					Sim.Init();         // find suns (Kopernicus support)
+					SubStepSimulation.Init(); // initialize shared Jobs/Burst geometry infrastructure
 					Radiation.Init();   // create the radiation fields
 					ScienceDB.Init();   // build the science database (needs Sim.Init() and Radiation.Init() first)
 					Science.Init();     // register the science hijacker
@@ -290,14 +291,20 @@ namespace KERBALISM
 				vd.EarlyUpdate();
 			}
 
+			// Refresh all vessel references first so the shared substep batch can
+			// snapshot every loaded simulated vessel in one pass.
+			foreach (Vessel v in FlightGlobals.Vessels)
+			{
+				v.KerbalismData().Update(v);
+			}
+
+			SubStepSimulation.PrepareLoadedVessels(FlightGlobals.Vessels, elapsed_s);
+
 			// for each vessel
 			foreach (Vessel v in FlightGlobals.Vessels)
 			{
 				// get vessel data
 				VesselData vd = v.KerbalismData();
-
-				// update the vessel data validity
-				vd.Update(v);
 
 				// keep track of rescue mission kerbals, and gift resources to their vessels on discovery
 				if (v.loaded && vd.is_vessel)
