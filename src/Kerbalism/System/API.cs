@@ -368,6 +368,53 @@ namespace KERBALISM
 			part.FindModulesImplementing<Reliability>().FindAll(k => k.isEnabled && k.broken).ForEach(k => k.Repair());
 		}
 
+		/// <summary>
+		/// All broken Reliability / EngineFailures components on simulated vessels, including unloaded ones.
+		/// </summary>
+		public static List<BrokenComponent> GetBrokenComponents()
+		{
+			return BrokenComponent.CollectAll();
+		}
+
+		/// <summary>
+		/// Fired when a component actually breaks or is repaired (not on vessel unpack).
+		/// Args: vessel, partFlightId, moduleName ("Reliability" or "EngineFailures"), type, broken, critical.
+		/// Works for loaded parts and unloaded proto failures.
+		/// </summary>
+		public static ReliabilityStateChanged OnReliabilityStateChanged = new ReliabilityStateChanged();
+
+		public class ReliabilityStateChanged
+		{
+			internal List<Action<Vessel, uint, string, string, bool, bool>> receivers = new List<Action<Vessel, uint, string, string, bool, bool>>();
+
+			public void Add(Action<Vessel, uint, string, string, bool, bool> receiver)
+			{
+				if (!receivers.Contains(receiver))
+					receivers.Add(receiver);
+			}
+
+			public void Remove(Action<Vessel, uint, string, string, bool, bool> receiver)
+			{
+				if (receivers.Contains(receiver))
+					receivers.Remove(receiver);
+			}
+
+			public void Notify(Vessel vessel, uint partFlightId, string moduleName, string type, bool broken, bool critical)
+			{
+				foreach (Action<Vessel, uint, string, string, bool, bool> receiver in receivers)
+				{
+					try
+					{
+						receiver.Invoke(vessel, partFlightId, moduleName, type, broken, critical);
+					}
+					catch (Exception e)
+					{
+						Lib.Log("ReliabilityStateChanged: Exception in event receiver " + e.Message + "\n" + e);
+					}
+				}
+			}
+		}
+
 
 		// --- HABITAT --------------------------------------------------------------
 

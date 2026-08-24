@@ -436,6 +436,7 @@ namespace KERBALISM
 
 				// type-specific hacks
 				Apply(false);
+				API.OnReliabilityStateChanged.Notify(vessel, part.flightID, BrokenComponent.ModuleReliability, type, false, false);
 
 				// we need to reconfigure the module here, because if all modules of a type
 				// share the broken state, and these modules are part of a configure setup,
@@ -537,6 +538,7 @@ namespace KERBALISM
 
 				// type-specific hacks
 				Apply(true);
+				API.OnReliabilityStateChanged.Notify(vessel, part.flightID, BrokenComponent.ModuleReliability, type, true, critical);
 
 				// notify user
 				Broken_msg(vessel, title, critical);
@@ -643,6 +645,7 @@ namespace KERBALISM
 
 				// show message
 				Broken_msg(v, reliability.title, critical);
+				API.OnReliabilityStateChanged.Notify(v, p.flightID, BrokenComponent.ModuleReliability, reliability.type, true, critical);
 			}
 			// safe mode
 			else

@@ -375,6 +375,14 @@ namespace KERBALISM
 		public static string Contracts_sampleTitle = GetLoc("Contracts_sampleTitle"); // "Analyze samples in space"
 		public static string Contracts_sampleDesc = GetLoc("Contracts_sampleDesc"); // "The Laboratory can analyze samples in space, in theory. We should check if this actually work by and analyzing some samples in space."
 		public static string Contracts_sampleComplete = GetLoc("Contracts_sampleComplete"); // "Our Laboratory analysis was good, perhaps even better than the ones done usually by our scientists at mission control. But don't tell'em."
+		public static ParamString Contracts_repairTitle = new ParamString("Contracts_repairTitle"); // "Repair <<1>> on <<2>>"
+		public static ParamString Contracts_repairDesc = new ParamString("Contracts_repairDesc"); // "Telemetry reports that the <<1>> on <<2>> has failed near <<3>>. Send a qualified engineer on EVA with repair kits to restore it. <<4>>"
+		public static ParamString Contracts_repairComplete = new ParamString("Contracts_repairComplete"); // "The <<1>> on <<2>> is operational again."
+		public static ParamString Contracts_repairFailed = new ParamString("Contracts_repairFailed"); // "The <<1>> on <<2>> was lost before it could be repaired."
+		public static ParamString Contracts_repairParam = new ParamString("Contracts_repairParam"); // "Repair the malfunctioning <<1>> on <<2>>"
+		public static ParamString Contracts_repairSynopsys = new ParamString("Contracts_repairSynopsys"); // "Repair the failed <<1>> on <<2>>"
+		public static string Contracts_repairCrewed = GetLoc("Contracts_repairCrewed"); // "The vessel is crewed."
+		public static string Contracts_repairUncrewed = GetLoc("Contracts_repairUncrewed"); // "The vessel is uncrewed; you will need to send a repair mission."
 
 		////////////////////////////////////////////////////////////////////
 		// Body info UI

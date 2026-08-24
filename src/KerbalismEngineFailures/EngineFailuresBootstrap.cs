@@ -9,6 +9,7 @@ namespace KERBALISM.EngineFailures
 		void Awake()
 		{
 			ReliabilityInfo.ExtraProviders.Add(Collect);
+			BrokenComponent.ExtraProviders.Add(CollectBroken);
 		}
 
 		static void Collect(Vessel vessel, List<ReliabilityInfo> result)
@@ -46,6 +47,66 @@ namespace KERBALISM.EngineFailures
 
 					modulePrefab.EnsureRatings();
 					result.Add(BuildInfo(partSnapshot, moduleSnapshot, modulePrefab));
+				}
+			}
+		}
+
+		static void CollectBroken(Vessel vessel, List<BrokenComponent> result)
+		{
+			if (vessel == null)
+				return;
+
+			if (vessel.loaded)
+			{
+				foreach (EngineFailures module in PartModuleCache.GetModules<EngineFailures>(vessel))
+				{
+					if (!module.isEnabled || !module.broken)
+						continue;
+					result.Add(BrokenComponent.FromLoaded(
+						vessel,
+						module.part,
+						BrokenComponent.ModuleEngineFailures,
+						BrokenComponent.ModuleEngineFailures,
+						Reliability.LocalizeTitle(module.title),
+						module.critical));
+				}
+				return;
+			}
+
+			if (vessel.protoVessel == null)
+				return;
+
+			Dictionary<string, Lib.Module_prefab_data> prefabData = new Dictionary<string, Lib.Module_prefab_data>();
+			foreach (ProtoPartSnapshot partSnapshot in vessel.protoVessel.protoPartSnapshots)
+			{
+				AvailablePart partInfo = PartLoader.getPartInfoByName(partSnapshot.partName);
+				if (partInfo == null || partInfo.partPrefab == null)
+					continue;
+
+				prefabData.Clear();
+				foreach (ProtoPartModuleSnapshot moduleSnapshot in partSnapshot.modules)
+				{
+					if (moduleSnapshot.moduleName != nameof(EngineFailures))
+						continue;
+
+					EngineFailures modulePrefab = Lib.ModulePrefab(
+						partInfo.partPrefab.Modules,
+						moduleSnapshot.moduleName,
+						prefabData) as EngineFailures;
+					if (modulePrefab == null)
+						continue;
+					if (!Lib.Proto.GetBool(moduleSnapshot, "isEnabled"))
+						continue;
+					if (!Lib.Proto.GetBool(moduleSnapshot, nameof(EngineFailures.broken), false))
+						continue;
+
+					result.Add(BrokenComponent.FromProto(
+						vessel,
+						partSnapshot,
+						BrokenComponent.ModuleEngineFailures,
+						BrokenComponent.ModuleEngineFailures,
+						Reliability.LocalizeTitle(modulePrefab.title),
+						Lib.Proto.GetBool(moduleSnapshot, nameof(EngineFailures.critical), false)));
 				}
 			}
 		}
@@ -120,7 +181,7 @@ namespace KERBALISM.EngineFailures
 				modulePrefab.redundancy,
 				Lib.Proto.GetBool(moduleSnapshot, nameof(EngineFailures.broken), false),
 				Lib.Proto.GetBool(moduleSnapshot, nameof(EngineFailures.critical), false),
-				0,
+				partSnapshot.flightID,
 				Lib.Proto.GetBool(moduleSnapshot, nameof(EngineFailures.needMaintenance), false),
 				relDuration,
 				relIgnitions,

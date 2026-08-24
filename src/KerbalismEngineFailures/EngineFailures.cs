@@ -463,6 +463,7 @@ namespace KERBALISM.EngineFailures
 				}
 
 				Apply(false);
+				API.OnReliabilityStateChanged.Notify(vessel, part.flightID, BrokenComponent.ModuleEngineFailures, BrokenComponent.ModuleEngineFailures, false, false);
 
 				part.FindModulesImplementing<Configure>().ForEach(k => k.DoConfigure());
 
@@ -519,6 +520,7 @@ namespace KERBALISM.EngineFailures
 				}
 
 				Apply(true);
+				API.OnReliabilityStateChanged.Notify(vessel, part.flightID, BrokenComponent.ModuleEngineFailures, BrokenComponent.ModuleEngineFailures, true, critical);
 				Broken_msg(vessel, title, critical);
 			}
 			else

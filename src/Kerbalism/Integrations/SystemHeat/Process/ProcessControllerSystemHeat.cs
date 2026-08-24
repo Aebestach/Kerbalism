@@ -819,8 +819,11 @@ namespace KERBALISM
 				if (!MatchesProcessReliability(reliability))
 					continue;
 
+				bool wasBroken = reliability.broken;
 				reliability.broken = true;
 				reliability.critical = true;
+				if (!wasBroken)
+					API.OnReliabilityStateChanged.Notify(vessel, part.flightID, BrokenComponent.ModuleReliability, reliability.type, true, true);
 			}
 		}
 

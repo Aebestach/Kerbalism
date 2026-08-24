@@ -42,7 +42,7 @@ namespace KERBALISM
 			group = module_prefab.redundancy;
 			broken = Lib.Proto.GetBool(m, "broken", false);
 			critical = Lib.Proto.GetBool(m, "critical", false);
-			partId = 0;
+			partId = p.flightID;
 			need_maintenance = Lib.Proto.GetBool(m, "need_maintenance", false);
 
 			bool quality = Lib.Proto.GetBool(m, "quality", false);

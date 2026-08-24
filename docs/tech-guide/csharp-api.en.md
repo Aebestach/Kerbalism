@@ -9,13 +9,20 @@ Major areas exposed by `API`:
 - Messages / `Kill` / `Breakdown` / `DisableKerbal` / `InjectRadiation`
 - Environment: sunlight, breathable atmosphere
 - Radiation fields, storms, blackout, belt/magnetopause visibility
-- Reliability: malfunction / critical / broken / repair
+- Reliability: malfunction / critical / broken / repair, `GetBrokenComponents()`, `OnReliabilityStateChanged`
 - Habitat: volume, surface, pressure, poisoning, shielding, living space, comfort
 - Resources: consume / produce / brokers / amounts / rates
 - Science hooks (`preventScienceCrediting`, `onSubjectsReceived`, experiment state events)
 - Comm / `AntennaInfo` handlers for custom communication mods
 
 For background resource production on your own PartModules, implement Kerbalism’s module hooks (`IKerbalismModule` / background update pattern) described later on this page — do not rely on stock resource APIs for unloaded vessels.
+
+## Reliability
+
+- `Malfunction(vessel)` / `Critical(vessel)` / `Broken(part)` / `Repair(part)` inspect or repair **loaded** parts.
+- `GetBrokenComponents()` lists every broken Reliability module on simulated vessels, including unloaded ones. EngineFailures (optional companion) is included via the same list.
+- `Failure` notifies `(Part, type, bool broken)` for **loaded** parts only (RemoteTech uses this). It also re-fires when a broken vessel unpacks.
+- `OnReliabilityStateChanged` notifies `(Vessel, partFlightId, moduleName, type, broken, critical)` when a component actually breaks or is repaired, including unloaded proto failures. Subscribe to this to complete a repair contract.
 
 # General API
 
