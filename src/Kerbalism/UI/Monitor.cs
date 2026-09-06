@@ -144,11 +144,11 @@ namespace KERBALISM
 
 		public float Width()
 		{
-			//if ((page == MonitorPage.data || page == MonitorPage.log || selected_id == Guid.Empty) && !Lib.IsFlight())
-			//	return Styles.ScaleWidthFloat(465.0f);
-			//return Styles.ScaleWidthFloat(355.0f);
+			// LOG asks for a wider panel so long transmission lines wrap fewer times.
+			// Other pages stay at the compact applauncher width.
+			if (page == MonitorPage.log && selected_id != Guid.Empty)
+				return Math.Max(Styles.ScaleWidthFloat(370.0f), panel.Width());
 			return Styles.ScaleWidthFloat(370.0f);
-			//return Styles.ScaleWidthFloat(405.0f);
 		}
 
 		public float Height()
