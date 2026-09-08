@@ -89,7 +89,6 @@ namespace KERBALISM
 			entry_label = new GUIStyle(HighLogic.Skin.label)
 			{
 				richText = true,
-				wordWrap = false,
 				stretchWidth = true,
 				stretchHeight = true,
 				fontSize = ScaleInteger(12),
@@ -112,7 +111,6 @@ namespace KERBALISM
 			entry_value = new GUIStyle(HighLogic.Skin.label)
 			{
 				richText = true,
-				wordWrap = false,
 				stretchWidth = true,
 				stretchHeight = true,
 				fontStyle = FontStyle.Bold,

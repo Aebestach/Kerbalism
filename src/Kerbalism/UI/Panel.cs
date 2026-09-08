@@ -289,7 +289,7 @@ namespace KERBALISM
 
 			// MinHeight (not Height) so a narrower column can still grow if the
 			// precomputed wrap used a slightly wider panel width.
-			GUILayout.BeginHorizontal(Styles.entry_container_wrap, GUILayout.MinHeight(rowHeight));
+			GUILayout.BeginHorizontal(Styles.entry_container_wrap, GUILayout.MinHeight(rowHeight), GUILayout.MaxWidth(min_width));
 			if (e.leftIcon != null)
 			{
 				GUILayout.Label(new GUIContent(e.leftIcon.texture, e.leftIcon.tooltip), Styles.left_icon);
